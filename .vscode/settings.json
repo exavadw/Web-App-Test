@@ -1,0 +1,4 @@
+{
+    "git.ignoreLimitWarning": true,
+    "cmake.sourceDirectory": "/Users/henrybar-or/Documents/Web App Test/whisper-rs/sys/whisper.cpp/examples/command"
+}
