@@ -94,3 +94,8 @@ input[type="text"], textarea {
 ::placeholder {
   color: var(--placeholder-text-color);
 }
+
+button.disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}

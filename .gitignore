@@ -1,0 +1,6 @@
+
+/rust_backend/target
+rust_backend/speech-to-text.ogg
+rust_backend/speech-to-text.wav
+rust_backend/output.wav
+/rust_backend/models

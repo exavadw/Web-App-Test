@@ -8,9 +8,9 @@
   document.documentElement.setAttribute("data-theme", "dark");
   let recordedAudioBlob = null; // Holds the recorded audio file
   let transcription = ""; // Stores the transcription result
-
-  let mediaRecorder; // MediaRecorder instance
-  let audioChunks = []; // Array to store recorded audio data
+  let mediaRecorder;
+  let audioChunks = [];
+  let recordingInterval;
 
   // Toggle the mode
   const toggleTheme = () => {
@@ -40,77 +40,76 @@
           console.error("Error:", error);
       }
   };
-  /*
+  
   const startRecording = async () => {
       if (!isRecording) {
           isRecording = true;
+          audioChunks = [];
           recordingTime = 0;
-          audioChunks = []; // Clear previous recordings
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
 
-          try {
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              mediaRecorder = new MediaRecorder(stream);
+          mediaRecorder.ondataavailable = (event) => {
+              audioChunks.push(event.data);
+          };
 
-              mediaRecorder.ondataavailable = (event) => {
-                  audioChunks.push(event.data);
-              };
+          mediaRecorder.onstop = async () => {
+              recordedAudioBlob = new Blob(audioChunks, { type: "audio/ogg; codecs=vorbis" });
+              const formData = new FormData();
+              formData.append("audio", recordedAudioBlob);
+              console.log(formData);
+              // Send the audio data to the backend to save the file
+              const saveResponse = await fetch("http://127.0.0.1:8080/api/save-audio", {
+                  method: "POST",
+                  body: formData,
+              });
 
-              mediaRecorder.onstop = () => {
-                  recordedAudioBlob = new Blob(audioChunks, { type: "audio/wav" });
-                  console.log("Recording stopped, audio blob created");
-              };
+              if (!saveResponse.ok) {
+                  alert("Error saving audio file!");
+              }
+          };
 
-              mediaRecorder.start();
-              console.log("Recording started");
-
-              // Update recording time
-              const interval = setInterval(() => {
-                  if (recordingTime >= 15 || !isRecording) {
-                      clearInterval(interval);
-                      stopRecording();
-                  } else {
-                      recordingTime++;
-                  }
-              }, 1000);
-          } catch (error) {
-              console.error("Error accessing microphone:", error);
-          }
+          mediaRecorder.start();
+          recordingInterval = setInterval(() => {
+              recordingTime++;
+              if (recordingTime >= 15) {
+                  stopRecording();
+              }
+          }, 1000);
       }
   };
 
   const stopRecording = () => {
-      if (isRecording && mediaRecorder) {
+      if (isRecording) {
           isRecording = false;
           mediaRecorder.stop();
+          clearInterval(recordingInterval);
       }
   };
 
-  const uploadAudioForTranscription = async () => {
-      if (!recordedAudioBlob) {
-          alert("No audio recorded!");
-          return;
-      }
+  const uploadForTranscription = async () => {
+    console.log("test");
+    console.log(recordedAudioBlob);
+      if (recordedAudioBlob) {
+        console.log("audio exists");
+          try {
+              const response = await fetch("http://127.0.0.1:8080/api/stt", {
+                  method: "POST",
+              });
 
-      const formData = new FormData();
-      formData.append("file", recordedAudioBlob, "audio.wav");
-
-      try {
-          const response = await fetch("http://127.0.0.1:8080/api/stt", {
-              method: "POST",
-              body: formData,
-          });
-
-          if (response.ok) {
-              const data = await response.json();
-              transcription = data.transcription;
-              console.log("Transcription:", transcription);
-          } else {
-              console.error("Error during transcription:", response.statusText);
+              if (response.ok) {
+                  transcription = await response.json();
+              } else {
+                  alert("Error transcribing audio!");
+              }
+          } catch (error) {
+              console.error("Error:", error);
           }
-      } catch (error) {
-          console.error("Error:", error);
       }
-  };*/
+    else {
+        alert("No audio recorded.");
+    }
+  };
 </script>
 
 <main>
@@ -141,10 +140,10 @@
 
   {#if mode === "speech-to-text"}
       <div class="speech-to-text">
-          <button>
+          <button on:click={isRecording ? stopRecording : startRecording}>
               {isRecording ? "Stop" : "🎤 Start Recording"}
           </button>
-          <button disabled={!recordedAudioBlob}>
+          <button on:click={uploadForTranscription} disabled={!recordedAudioBlob} class:disabled={!recordedAudioBlob}>
               Upload for Transcription
           </button>
           <p>{transcription ? `Transcription: ${transcription}` : "Transcription will appear here."}</p>

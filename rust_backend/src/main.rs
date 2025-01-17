@@ -1,16 +1,40 @@
 use actix_files::Files;
-use actix_web::{web, App, HttpServer, Responder, HttpResponse};
+use actix_web::{web, App, HttpServer, Responder, HttpResponse, HttpRequest};
 use actix_cors::Cors;
 use serde::Deserialize;
 use std::fs::{self, File};
-use std::io::{Write, Read};
+use std::io::{BufWriter, Write, Read};
 use std::env;
 use std::path::Path;
-use piper_rs::synth::PiperSpeechSynthesizer;
+use futures_util::StreamExt;
+use ogg::reading::PacketReader;
+use hound::{WavWriter, WavSpec, SampleFormat};
+use opus::{Decoder, Channels};
+use simple_transcribe_rs::{model_handler, transcriber};
 
 #[derive(Deserialize)]
 struct TtsRequest {
     text: String,
+}
+
+#[derive(Deserialize)]
+struct SttRequest {
+    audio: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct DeepgramResponse {
+    results: Vec<DeepgramResult>,
+}
+
+#[derive(Deserialize)]
+struct DeepgramResult {
+    alternatives: Vec<DeepgramAlternative>,
+}
+
+#[derive(Deserialize)]
+struct DeepgramAlternative {
+    transcript: String,
 }
 
 async fn text_to_speech(request: web::Json<TtsRequest>) -> impl Responder {
@@ -42,19 +66,13 @@ async fn text_to_speech(request: web::Json<TtsRequest>) -> impl Responder {
     }
 
     // Read the generated audio file
-    let mut audio_data = Vec::new();
-    match File::open(output_path) {
-        Ok(mut file) => {
-            if let Err(err) = file.read_to_end(&mut audio_data) {
-                eprintln!("Error reading audio file: {}", err);
-                return HttpResponse::InternalServerError().body("Failed to read generated audio");
-            }
-        }
+    let audio_data = match fs::read(&output_path) {
+        Ok(data) => data,
         Err(err) => {
-            eprintln!("Error opening audio file: {}", err);
-            return HttpResponse::InternalServerError().body("Failed to open generated audio file");
+            eprintln!("Error reading audio file: {}", err);
+            return HttpResponse::InternalServerError().body("Failed to read audio file");
         }
-    }
+    };
 
     // Return the audio data as the response
     HttpResponse::Ok()
@@ -62,13 +80,119 @@ async fn text_to_speech(request: web::Json<TtsRequest>) -> impl Responder {
         .body(audio_data)
 }
 
+async fn save_audio(req: HttpRequest, mut payload: web::Payload) -> impl Responder {
+    let file_path = "./speech-to-text.ogg";
+    let file = File::create(file_path);
+    
+    if let Err(err) = file {
+        return HttpResponse::InternalServerError().body(format!("Failed to create file: {}", err));
+    }
+
+    let mut file = BufWriter::new(file.unwrap());
+
+    // Print the current codec from the Content-Type header
+    if let Some(content_type) = req.headers().get("Content-Type") {
+        println!("Content-Type: {}", content_type.to_str().unwrap());
+    }
+
+    while let Some(chunk) = payload.next().await {
+        match chunk {
+            Ok(data) => {
+                if let Err(err) = file.write_all(&data) {
+                    return HttpResponse::InternalServerError()
+                        .body(format!("Failed to write data to file: {}", err));
+                }
+            }
+            Err(err) => {
+                return HttpResponse::InternalServerError()
+                    .body(format!("Error while reading payload: {}", err));
+            }
+        }
+    }
+/*
+    // Print the codec used in the OGG file
+    match find_ogg_codec(file_path) {
+        Ok(codec) => println!("Codec used: {}", codec),
+        Err(err) => eprintln!("Failed to find codec: {}", err),
+    }*/
+
+    convert_ogg_to_wav(file_path, "./speech-to-text.wav");
+    HttpResponse::Ok().body("File saved successfully")
+}
+
+fn find_ogg_codec(ogg_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let ogg_file = File::open(ogg_path)?;
+    let mut reader = PacketReader::new(ogg_file);
+
+    while let Some(packet) = reader.read_packet()? {
+        if packet.data.starts_with(b"\x01vorbis") {
+            return Ok("Vorbis".to_string());
+        } else if packet.data.starts_with(b"OpusHead") {
+            return Ok("Opus".to_string());
+        }
+    }
+
+    Ok("Unknown".to_string())
+}
+
+fn convert_ogg_to_wav(ogg_path: &str, wav_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let ogg_file = File::open(ogg_path)?;
+    let mut reader = PacketReader::new(ogg_file);
+    // Initialize Opus decoder
+    let cchannels = Channels::Stereo;
+    let mut opus_decoder = Decoder::new(48000, cchannels)?;
+
+    // Create WAV writer
+    let spec = WavSpec {
+        channels: 2,
+        sample_rate: 48000,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let wav_file = File::create(wav_path)?;
+    let mut wav_writer = WavWriter::new(wav_file, spec)?;
+
+    let mut output_buffer = vec![0; 960 * 2]; // Buffer for decoded samples
+
+    while let Some(packet) = reader.read_packet()? {
+        if packet.data.starts_with(b"OpusTags") {
+            continue;
+        }
+
+        if packet.data.starts_with(b"OpusHead") {
+            continue;
+        }
+
+        let decoded_samples = opus_decoder.decode(&packet.data, &mut output_buffer, false)?;
+        for sample in &output_buffer[..decoded_samples * 2] {
+            wav_writer.write_sample(*sample)?;
+        }
+    }
+
+    wav_writer.finalize()?;
+    Ok(())
+}
+
+async fn speech_to_text() -> impl Responder {
+    println!("function run");
+    let model = model_handler::ModelHandler::new("base", "models/").await;
+    println!("downloading model");
+    let transcriber = transcriber::Transcriber::new(model);
+    println!("transcriber made");
+    let result = transcriber.transcribe("./speech-to-text.wav", None).unwrap();
+    println!("transcription complete");
+    let text = result.get_text();
+    println!("text: {}", text);
+    HttpResponse::Ok().json(text)
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("Current working directory: {}", env::current_dir().unwrap().display());
-    let svelte_dist_path = "/Users/henrybar-or/Documents/Web App Test/svelte_frontend/dist";
+    let svelte_dist_path = Path::new("/home/exavadw/Documents/GitHub/Web-App-Test/svelte_frontend/dist");
     // Resolve the absolute path
-    let absolute_path = fs::canonicalize(svelte_dist_path)
-        .unwrap_or_else(|_| std::path::PathBuf::from(svelte_dist_path));
+    let absolute_path = fs::canonicalize(&svelte_dist_path)
+        .unwrap_or_else(|_| svelte_dist_path.to_path_buf());
     println!("Serving static files from: {}", absolute_path.display());
     println!("Starting server at http://localhost:8080");
 
@@ -81,8 +205,9 @@ async fn main() -> std::io::Result<()> {
             .allow_any_header() // Allow any header
         )
             // API routes
-            //.route("/api/stt", web::post().to(speech_to_text))
+            .route("/api/stt", web::post().to(speech_to_text))
             .route("/api/tts", web::post().to(text_to_speech))
+            .route("/api/save-audio", web::post().to(save_audio))
             // Serve the Svelte `dist` folder
             .service(Files::new("/", absolute_path.clone()).index_file("index.html"))
     })
