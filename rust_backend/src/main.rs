@@ -6,10 +6,12 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write, Read};
 use std::env;
 use std::path::Path;
+use piper_rs::synth::PiperSpeechSynthesizer;
+use reqwest::Client;
 use futures_util::StreamExt;
 use ogg::reading::PacketReader;
 use hound::{WavWriter, WavSpec, SampleFormat};
-use opus::{Decoder, Channels};
+use opus::{Decoder, Channels}; // Import Opus Decoder and Channels enum
 use simple_transcribe_rs::{model_handler, transcriber};
 
 #[derive(Deserialize)]
